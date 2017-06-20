@@ -79,7 +79,7 @@ printActivity(CUpti_Activity *record)
     case CUPTI_ACTIVITY_KIND_MEMCPY:
         {
             CUpti_ActivityMemcpy *uvm = (CUpti_ActivityMemcpy *) record;
-            printf( "MEMORY_COPY [ ID %d/%d/%d :: %llu (ms) :: %llu (bytes) :: %d/%d/%d (Kind)]\n",
+            printf( "MEMORY_CPY [ ID %d/%d/%d :: %llu (ms) :: %llu (bytes) :: %d/%d/%d (Kind)]\n",
                     (int) uvm->contextId, (int) uvm->correlationId, (int) uvm->deviceId,
                     (unsigned long long) ((uvm->end-uvm->start)/1e6),
                     (unsigned long long) (uvm->bytes),
@@ -95,6 +95,21 @@ printActivity(CUpti_Activity *record)
                     (unsigned long long) (uvm->bytes),
                     uvm->memoryKind,
                     uvm->value);
+            break;
+        }
+    case CUPTI_ACTIVITY_KIND_KERNEL:
+    case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL:
+        {
+            CUpti_ActivityKernel3 *uvm = (CUpti_ActivityKernel3 *) record;
+            printf( "KERNEL_RUN [ ID %d/%d/%d :: %llu (ms) :: %d/%d/%d (block) :: %d (gridID) :: \
+%d (RegPerThd) :: %d/%d (SharedMem) :: %d/%d (LocMem) ]\n",
+                    (int) uvm->contextId, (int) uvm->correlationId, (int) uvm->deviceId,
+                    (unsigned long long) ((uvm->end-uvm->start)/1e6),
+                    (int) uvm->blockX, (int) uvm->blockY, (int) uvm->blockZ,
+                    (int) uvm->gridId, (int) uvm->registersPerThread,
+                    (int) uvm->dynamicSharedMemory, (int) uvm->staticSharedMemory,
+                    (int) uvm->localMemoryPerThread, (int) uvm->localMemoryTotal
+                  );
             break;
         }
     default:
@@ -171,12 +186,6 @@ __host__ __device__ void writeData(T *data, int size, int writeVal) {
     }
 }
 
-__global__ void testKernel(int *data, int size, int expectedVal)
-{
-    checkData("GPU", data, size, expectedVal);
-    writeData(data, size, -expectedVal);
-}
-
 // No bank-conflict transpose
 // Same as transposeCoalesced except the first tile dimension is padded
 // to avoid shared memory bank conflicts.
@@ -228,6 +237,7 @@ int main(int argc, char **argv)
 
     CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY) );
     CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMSET) );
+    CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL) );
 
     // allocate memory
     printf("|    allocation size in %d bytes\n", 2*mem_size);
@@ -280,8 +290,9 @@ int main(int argc, char **argv)
     CUPTI_CALL(cuptiActivityFlushAll(0));
 
     // disable unified memory counter activity
-    CUPTI_CALL(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMCPY));
-    CUPTI_CALL(cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMSET));
+    CUPTI_CALL( cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMCPY) );
+    CUPTI_CALL( cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMSET) );
+    CUPTI_CALL( cuptiActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL) );
 
     printf("|    time %f\n", ms);
 
