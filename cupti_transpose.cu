@@ -1,19 +1,17 @@
+/*
+ * Copyright 2011-2015 NVIDIA Corporation. All rights reserved
+ *
+ * Sample app to demonstrate use of CUPTI library to obtain metric values
+ * using callbacks for CUDA runtime APIs
+ *
+ */
+
 #include <stdio.h>
-#include <stdlib.h>
 #include <cuda.h>
 #include <cupti.h>
 
-#define CUPTI_CALL(call)                                                    \
-do {                                                                        \
-    CUptiResult _status = call;                                             \
-    if (_status != CUPTI_SUCCESS) {                                         \
-      const char *errstr;                                                   \
-      cuptiGetResultString(_status, &errstr);                               \
-      fprintf(stderr, "%s:%d: error: function %s failed with error %s.\n",  \
-              __FILE__, __LINE__, #call, errstr);                           \
-      exit(-1);                                                             \
-    }                                                                       \
-} while (0)
+#define METRIC_NAME_TESLA "branch_efficiency"
+#define METRIC_NAME_FERMI "ipc"
 
 #define DRIVER_API_CALL(apiFuncCall)                                           \
 do {                                                                           \
@@ -35,268 +33,559 @@ do {                                                                           \
     }                                                                          \
 } while (0)
 
-#define BUF_SIZE (8 * 1024)
+#define CUPTI_CALL(call)                                                \
+  do {                                                                  \
+    CUptiResult _status = call;                                         \
+    if (_status != CUPTI_SUCCESS) {                                     \
+      const char *errstr;                                               \
+      cuptiGetResultString(_status, &errstr);                           \
+      fprintf(stderr, "%s:%d: error: function %s failed with error %s.\n", \
+              __FILE__, __LINE__, #call, errstr);                       \
+      exit(-1);                                                         \
+    }                                                                   \
+  } while (0)
+
 #define ALIGN_SIZE (8)
 #define ALIGN_BUFFER(buffer, align)                                            \
-    (((uintptr_t) (buffer) & ((align)-1)) ? ((buffer) + (align) - ((uintptr_t) (buffer) & ((align)-1))) : (buffer))
-
-#define TILE_DIM 32
-#define BLOCK_ROWS 8
-#define NUM_REPS 100
+  (((uintptr_t) (buffer) & ((align)-1)) ? ((buffer) + (align) - ((uintptr_t) (buffer) & ((align)-1))) : (buffer))
 
 static const char *
 getUvmCounterKindString(CUpti_ActivityUnifiedMemoryCounterKind kind)
 {
-    switch (kind)
-    {
-    case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_HTOD:
-        return "BYTES_TRANSFER_HTOD";
-    case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_DTOH:
-        return "BYTES_TRANSFER_DTOH";
-    default:
-        break;
-    }
-    return "<unknown>";
+  switch (kind)
+  {
+  case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_HTOD:
+      return "BYTES_TRANSFER_HTOD";
+  case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_DTOH:
+      return "BYTES_TRANSFER_DTOH";
+  default:
+      break;
+  }
+  return "<unknown>";
 }
 
 static void
 printActivity(CUpti_Activity *record)
 {
-    switch (record->kind)
-    {
-    case CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER:
-        {
-            CUpti_ActivityUnifiedMemoryCounter2 *uvm = (CUpti_ActivityUnifiedMemoryCounter2 *)record;
-            printf("UNIFIED_MEMORY_COUNTER [ %llu %llu ] kind=%s value=%llu src %u dst %u\n",
-                (unsigned long long)(uvm->start),
-                (unsigned long long)(uvm->end),
-                getUvmCounterKindString(uvm->counterKind),
-                (unsigned long long)uvm->value,
-                uvm->srcId,
-                uvm->dstId);
-            break;
-        }
-    case CUPTI_ACTIVITY_KIND_MEMCPY:
-        {
-            CUpti_ActivityMemcpy *uvm = (CUpti_ActivityMemcpy *) record;
-            printf( "MEMORY_CPY [ ID %d/%d/%d :: %llu (ms) :: %llu (bytes) :: %d/%d/%d (Kind)]\n",
-                    (int) uvm->contextId, (int) uvm->correlationId, (int) uvm->deviceId,
-                    (unsigned long long) ((uvm->end-uvm->start)/1e6),
-                    (unsigned long long) (uvm->bytes),
-                    uvm->copyKind, uvm->srcKind, uvm->dstKind);
-            break;
-        }
-    case CUPTI_ACTIVITY_KIND_MEMSET:
-        {
-            CUpti_ActivityMemset *uvm = (CUpti_ActivityMemset *) record;
-            printf( "MEMORY_SET [ ID %d/%d/%d :: %llu (ms) :: %llu (bytes) :: %d (Kind) :: %d (value) ]\n",
-                    (int) uvm->contextId, (int) uvm->correlationId, (int) uvm->deviceId,
-                    (unsigned long long) ((uvm->end-uvm->start)/1e6),
-                    (unsigned long long) (uvm->bytes),
-                    uvm->memoryKind,
-                    uvm->value);
-            break;
-        }
-    case CUPTI_ACTIVITY_KIND_KERNEL:
-    case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL:
-        {
-            CUpti_ActivityKernel3 *uvm = (CUpti_ActivityKernel3 *) record;
-            printf( "KERNEL_RUN [ ID %d/%d/%d :: %llu (ms) :: %d/%d/%d (block) :: %d (gridID) :: \
+  switch (record->kind)
+  {
+  case CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER:
+      {
+          CUpti_ActivityUnifiedMemoryCounter2 *uvm = (CUpti_ActivityUnifiedMemoryCounter2 *)record;
+          printf("UNIFIED_MEMORY_COUNTER [ %llu %llu ] kind=%s value=%llu src %u dst %u\n",
+              (unsigned long long)(uvm->start),
+              (unsigned long long)(uvm->end),
+              getUvmCounterKindString(uvm->counterKind),
+              (unsigned long long)uvm->value,
+              uvm->srcId,
+              uvm->dstId);
+          break;
+      }
+  case CUPTI_ACTIVITY_KIND_MEMCPY:
+      {
+          CUpti_ActivityMemcpy *uvm = (CUpti_ActivityMemcpy *) record;
+          printf( "MEMORY_CPY [ ID %d/%d/%d :: %llu (ms) :: %llu (bytes) :: %d/%d/%d (Kind)]\n",
+                  (int) uvm->contextId, (int) uvm->correlationId, (int) uvm->deviceId,
+                  (unsigned long long) ((uvm->end-uvm->start)/1e6),
+                  (unsigned long long) (uvm->bytes),
+                  uvm->copyKind, uvm->srcKind, uvm->dstKind);
+          break;
+      }
+  case CUPTI_ACTIVITY_KIND_MEMSET:
+      {
+          CUpti_ActivityMemset *uvm = (CUpti_ActivityMemset *) record;
+          printf( "MEMORY_SET [ ID %d/%d/%d :: %llu (ms) :: %llu (bytes) :: %d (Kind) :: %d (value) ]\n",
+                  (int) uvm->contextId, (int) uvm->correlationId, (int) uvm->deviceId,
+                  (unsigned long long) ((uvm->end-uvm->start)/1e6),
+                  (unsigned long long) (uvm->bytes),
+                  uvm->memoryKind,
+                  uvm->value);
+          break;
+      }
+  case CUPTI_ACTIVITY_KIND_KERNEL:
+  case CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL:
+      {
+          CUpti_ActivityKernel3 *uvm = (CUpti_ActivityKernel3 *) record;
+          printf( "KERNEL_RUN [ ID %d/%d/%d :: %llu (ms) :: %d/%d/%d (block) :: %d (gridID) :: \
 %d (RegPerThd) :: %d/%d (SharedMem) :: %d/%d (LocMem) ]\n",
-                    (int) uvm->contextId, (int) uvm->correlationId, (int) uvm->deviceId,
-                    (unsigned long long) ((uvm->end-uvm->start)/1e6),
-                    (int) uvm->blockX, (int) uvm->blockY, (int) uvm->blockZ,
-                    (int) uvm->gridId, (int) uvm->registersPerThread,
-                    (int) uvm->dynamicSharedMemory, (int) uvm->staticSharedMemory,
-                    (int) uvm->localMemoryPerThread, (int) uvm->localMemoryTotal
-                  );
-            break;
-        }
-    default:
-        printf("  <unknown>\n");
-        break;
+                  (int) uvm->contextId, (int) uvm->correlationId, (int) uvm->deviceId,
+                  (unsigned long long) ((uvm->end-uvm->start)/1e6),
+                  (int) uvm->blockX, (int) uvm->blockY, (int) uvm->blockZ,
+                  (int) uvm->gridId, (int) uvm->registersPerThread,
+                  (int) uvm->dynamicSharedMemory, (int) uvm->staticSharedMemory,
+                  (int) uvm->localMemoryPerThread, (int) uvm->localMemoryTotal
+                );
+          break;
+      }
+  default:
+      printf("  <unknown>\n");
+      break;
+  }
+}
+
+// User data for event collection callback
+typedef struct MetricData_st {
+  // the device where metric is being collected
+  CUdevice device;
+  // the set of event groups to collect for a pass
+  CUpti_EventGroupSet *eventGroups;
+  // the current number of events collected in eventIdArray and
+  // eventValueArray
+  uint32_t eventIdx;
+  // the number of entries in eventIdArray and eventValueArray
+  uint32_t numEvents;
+  // array of event ids
+  CUpti_EventID *eventIdArray;
+  // array of event values
+  uint64_t *eventValueArray;
+} MetricData_t;
+
+static uint64_t kernelDuration;
+
+#define TILE_DIM 64
+#define BLOCK_ROWS 8
+#define NUM_REPS 100
+
+// Device code
+__global__ void VecAdd(const float* A, const float* B, float* C, int N)
+{
+  __shared__ float tile[TILE_DIM];
+  tile[threadIdx.x] = A[threadIdx.x];
+
+  int i = blockDim.x * blockIdx.x + threadIdx.x;
+
+  if (i < N)
+    C[i] = A[i] + B[i];
+}
+
+static void
+initVec(float *vec, int n)
+{
+  for (int i=0; i< n; i++)
+    vec[i] = i;
+}
+
+void CUPTIAPI
+getMetricValueCallback(void *userdata, CUpti_CallbackDomain domain,
+                       CUpti_CallbackId cbid, const CUpti_CallbackData *cbInfo)
+{
+  MetricData_t *metricData = (MetricData_t*)userdata;
+  unsigned int i, j, k;
+
+  // This callback is enabled only for launch so we shouldn't see
+  // anything else.
+  if (cbid != CUPTI_RUNTIME_TRACE_CBID_cudaLaunch_v3020) {
+    printf("%s:%d: unexpected cbid %d\n", __FILE__, __LINE__, cbid);
+    exit(-1);
+  }
+
+  // on entry, enable all the event groups being collected this pass,
+  // for metrics we collect for all instances of the event
+  if (cbInfo->callbackSite == CUPTI_API_ENTER) {
+    cudaDeviceSynchronize();
+
+    CUPTI_CALL(cuptiSetEventCollectionMode(cbInfo->context,
+                                           CUPTI_EVENT_COLLECTION_MODE_KERNEL));
+
+    for (i = 0; i < metricData->eventGroups->numEventGroups; i++) {
+      uint32_t all = 1;
+      CUPTI_CALL(cuptiEventGroupSetAttribute(metricData->eventGroups->eventGroups[i],
+                                             CUPTI_EVENT_GROUP_ATTR_PROFILE_ALL_DOMAIN_INSTANCES,
+                                             sizeof(all), &all));
+      CUPTI_CALL(cuptiEventGroupEnable(metricData->eventGroups->eventGroups[i]));
     }
+  }
+
+  // on exit, read and record event values
+  if (cbInfo->callbackSite == CUPTI_API_EXIT) {
+    cudaDeviceSynchronize();
+
+    // for each group, read the event values from the group and record
+    // in metricData
+    for (i = 0; i < metricData->eventGroups->numEventGroups; i++) {
+      CUpti_EventGroup group = metricData->eventGroups->eventGroups[i];
+      CUpti_EventDomainID groupDomain;
+      uint32_t numEvents, numInstances, numTotalInstances;
+      CUpti_EventID *eventIds;
+      size_t groupDomainSize = sizeof(groupDomain);
+      size_t numEventsSize = sizeof(numEvents);
+      size_t numInstancesSize = sizeof(numInstances);
+      size_t numTotalInstancesSize = sizeof(numTotalInstances);
+      uint64_t *values, normalized, sum;
+      size_t valuesSize, eventIdsSize;
+
+      CUPTI_CALL(cuptiEventGroupGetAttribute(group,
+                                             CUPTI_EVENT_GROUP_ATTR_EVENT_DOMAIN_ID,
+                                             &groupDomainSize, &groupDomain));
+      CUPTI_CALL(cuptiDeviceGetEventDomainAttribute(metricData->device, groupDomain,
+                                                    CUPTI_EVENT_DOMAIN_ATTR_TOTAL_INSTANCE_COUNT,
+                                                    &numTotalInstancesSize, &numTotalInstances));
+      CUPTI_CALL(cuptiEventGroupGetAttribute(group,
+                                             CUPTI_EVENT_GROUP_ATTR_INSTANCE_COUNT,
+                                             &numInstancesSize, &numInstances));
+      CUPTI_CALL(cuptiEventGroupGetAttribute(group,
+                                             CUPTI_EVENT_GROUP_ATTR_NUM_EVENTS,
+                                             &numEventsSize, &numEvents));
+      eventIdsSize = numEvents * sizeof(CUpti_EventID);
+      eventIds = (CUpti_EventID *)malloc(eventIdsSize);
+      CUPTI_CALL(cuptiEventGroupGetAttribute(group,
+                                             CUPTI_EVENT_GROUP_ATTR_EVENTS,
+                                             &eventIdsSize, eventIds));
+
+      valuesSize = sizeof(uint64_t) * numInstances;
+      values = (uint64_t *)malloc(valuesSize);
+
+      for (j = 0; j < numEvents; j++) {
+        CUPTI_CALL(cuptiEventGroupReadEvent(group, CUPTI_EVENT_READ_FLAG_NONE,
+                                            eventIds[j], &valuesSize, values));
+        if (metricData->eventIdx >= metricData->numEvents) {
+          fprintf(stderr, "error: too many events collected, metric expects only %d\n",
+                  (int)metricData->numEvents);
+          exit(-1);
+        }
+
+        // sum collect event values from all instances
+        sum = 0;
+        for (k = 0; k < numInstances; k++)
+          sum += values[k];
+
+        // normalize the event value to represent the total number of
+        // domain instances on the device
+        normalized = (sum * numTotalInstances) / numInstances;
+
+        metricData->eventIdArray[metricData->eventIdx] = eventIds[j];
+        metricData->eventValueArray[metricData->eventIdx] = normalized;
+        metricData->eventIdx++;
+
+        // print collected value
+        {
+          char eventName[128];
+          size_t eventNameSize = sizeof(eventName) - 1;
+          CUPTI_CALL(cuptiEventGetAttribute(eventIds[j], CUPTI_EVENT_ATTR_NAME,
+                                            &eventNameSize, eventName));
+          eventName[127] = '\0';
+          printf("\t%s = %llu (", eventName, (unsigned long long)sum);
+          if (numInstances > 1) {
+            for (k = 0; k < numInstances; k++) {
+              if (k != 0)
+                printf(", ");
+              printf("%llu", (unsigned long long)values[k]);
+            }
+          }
+
+          printf(")\n");
+          printf("\t%s (normalized) (%llu * %u) / %u = %llu\n",
+                 eventName, (unsigned long long)sum,
+                 numTotalInstances, numInstances,
+                 (unsigned long long)normalized);
+        }
+      }
+
+      free(values);
+    }
+
+    for (i = 0; i < metricData->eventGroups->numEventGroups; i++)
+      CUPTI_CALL(cuptiEventGroupDisable(metricData->eventGroups->eventGroups[i]));
+  }
+}
+
+static void
+cleanUp(float *h_A, float *h_B, float *h_C, float *d_A, float *d_B, float *d_C)
+{
+  if (d_A)
+    cudaFree(d_A);
+  if (d_B)
+    cudaFree(d_B);
+  if (d_C)
+    cudaFree(d_C);
+
+  // Free host memory
+  if (h_A)
+    free(h_A);
+  if (h_B)
+    free(h_B);
+  if (h_C)
+    free(h_C);
+}
+
+static void
+runPass()
+{
+  int N = 10240 * 10240;
+  size_t size = N * sizeof(float);
+  int threadsPerBlock = 0;
+  int blocksPerGrid = 0;
+  float *h_A, *h_B, *h_C;
+  float *d_A, *d_B, *d_C;
+  int i, sum;
+
+  // Allocate input vectors h_A and h_B in host memory
+  h_A = (float*)malloc(size);
+  h_B = (float*)malloc(size);
+  h_C = (float*)malloc(size);
+
+  // Initialize input vectors
+  initVec(h_A, N);
+  initVec(h_B, N);
+  memset(h_C, 0, size);
+
+  // Allocate vectors in device memory
+  cudaMalloc((void**)&d_A, size);
+  cudaMalloc((void**)&d_B, size);
+  cudaMalloc((void**)&d_C, size);
+
+  // Copy vectors from host memory to device memory
+  cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice);
+
+  cudaMemset(d_A, 0, size);
+  cudaMemset(d_B, 0, size);
+
+  // Invoke kernel
+  threadsPerBlock = 64;
+  blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
+  printf("Launching kernel: blocks %d, thread/block %d\n",
+         blocksPerGrid, threadsPerBlock);
+  VecAdd<<<blocksPerGrid, threadsPerBlock>>>(d_A, d_B, d_C, N);
+
+  // dim3 dimGrid(N/TILE_DIM, N/TILE_DIM, 1);
+  // dim3 dimBlock(TILE_DIM, BLOCK_ROWS, 1);
+  //
+  // transposeNoBankConflicts<<<dimGrid, dimBlock>>>(d_C, d_A);
+
+  // Copy result from device memory to host memory
+  // h_C contains the result in host memory
+  cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
+
+  // Verify result
+  // for (i = 0; i < N; ++i) {
+  //   sum = h_A[i] + h_B[i];
+  //   if (h_C[i] != sum) {
+  //     fprintf(stderr, "error: result verification failed\n");
+  //     exit(-1);
+  //   }
+  // }
+
+  cleanUp(h_A, h_B, h_C, d_A, d_B, d_C);
 }
 
 static void CUPTIAPI
 bufferRequested(uint8_t **buffer, size_t *size, size_t *maxNumRecords)
 {
-    uint8_t *rawBuffer;
+  uint8_t *rawBuffer;
 
-    *size = BUF_SIZE;
-    rawBuffer = (uint8_t *)malloc(*size + ALIGN_SIZE);
+  *size = 16 * 1024;
+  rawBuffer = (uint8_t *)malloc(*size + ALIGN_SIZE);
 
-    *buffer = ALIGN_BUFFER(rawBuffer, ALIGN_SIZE);
-    *maxNumRecords = 0;
+  *buffer = ALIGN_BUFFER(rawBuffer, ALIGN_SIZE);
+  *maxNumRecords = 0;
 
-    if (*buffer == NULL) {
-        printf("Error: out of memory\n");
-        exit(-1);
-    }
+  if (*buffer == NULL) {
+    printf("Error: out of memory\n");
+    exit(-1);
+  }
 }
 
 static void CUPTIAPI
 bufferCompleted(CUcontext ctx, uint32_t streamId, uint8_t *buffer, size_t size, size_t validSize)
 {
-    CUptiResult status;
-    CUpti_Activity *record = NULL;
+  CUptiResult status;
+  CUpti_Activity *record = NULL;
+  // CUpti_ActivityKernel3 *kernel;
+  //
+  // //since we launched only 1 kernel, we should have only 1 kernel record
+  // CUPTI_CALL(cuptiActivityGetNextRecord(buffer, validSize, &record));
+  //
+  // kernel = (CUpti_ActivityKernel3 *)record;
+  // if (kernel->kind != CUPTI_ACTIVITY_KIND_KERNEL) {
+  //   fprintf(stderr, "Error: expected kernel activity record, got %d\n", (int)kernel->kind);
+  //   exit(-1);
+  // }
+  //
+  // kernelDuration = kernel->end - kernel->start;
+  // free(buffer);
 
-    do {
-        status = cuptiActivityGetNextRecord(buffer, validSize, &record);
-        if (status == CUPTI_SUCCESS) {
-            printActivity(record);
-        }
-        else if (status == CUPTI_ERROR_MAX_LIMIT_REACHED) {
-            break;
-        }
-        else {
-            CUPTI_CALL(status);
-        }
-    } while (1);
+  do {
+      status = cuptiActivityGetNextRecord(buffer, validSize, &record);
+      if (status == CUPTI_SUCCESS) {
+          printActivity(record);
+      }
+      else if (status == CUPTI_ERROR_MAX_LIMIT_REACHED) {
+          break;
+      }
+      else {
+          CUPTI_CALL(status);
+      }
+  } while (1);
 
-    // report any records dropped from the queue
-    size_t dropped;
-    CUPTI_CALL(cuptiActivityGetNumDroppedRecords(ctx, streamId, &dropped));
-    if (dropped != 0) {
-        printf("Dropped %u activity records\n", (unsigned int)dropped);
-    }
+  // report any records dropped from the queue
+  size_t dropped;
+  CUPTI_CALL(cuptiActivityGetNumDroppedRecords(ctx, streamId, &dropped));
+  if (dropped != 0) {
+      printf("Dropped %u activity records\n", (unsigned int)dropped);
+  }
 
-    free(buffer);
+  free(buffer);
 }
 
-template<class T>
-__host__ __device__ void checkData(const char *loc, T *data, int size, int expectedVal) {
-    int i;
-
-    for (i = 0; i < size / (int)sizeof(T); i++) {
-        if (data[i] != expectedVal) {
-            printf("Mismatch found on %s\n", loc);
-            printf("Address 0x%p, Observed = 0x%x Expected = 0x%x\n", data+i, data[i], expectedVal);
-            break;
-        }
-    }
-}
-
-template<class T>
-__host__ __device__ void writeData(T *data, int size, int writeVal) {
-    int i;
-
-    for (i = 0; i < size / (int)sizeof(T); i++) {
-        data[i] = writeVal;
-    }
-}
-
-// No bank-conflict transpose
-// Same as transposeCoalesced except the first tile dimension is padded
-// to avoid shared memory bank conflicts.
-__global__ void transposeNoBankConflicts(float *odata, const float *idata)
+int
+main(int argc, char *argv[])
 {
-  __shared__ float tile[TILE_DIM][TILE_DIM+1];
+  CUpti_SubscriberHandle subscriber;
+  CUcontext context = 0;
+  CUdevice device = 0;
+  int computeCapabilityMajor=0;
+  int computeCapabilityMinor=0;
+  int deviceNum;
+  int deviceCount;
+  char deviceName[32];
+  const char *metricName;
+  CUpti_MetricID metricId;
+  CUpti_EventGroupSets *passData;
+  MetricData_t metricData;
+  unsigned int pass;
+  CUpti_MetricValue metricValue;
 
-  int x = blockIdx.x * TILE_DIM + threadIdx.x;
-  int y = blockIdx.y * TILE_DIM + threadIdx.y;
-  int width = gridDim.x * TILE_DIM;
+  printf("Usage: %s [device_num] [metric_name]\n", argv[0]);
 
-  for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-     tile[threadIdx.y+j][threadIdx.x] = idata[(y+j)*width + x];
+  // make sure activity is enabled before any CUDA API
+  CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY) );
+  CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMSET) );
+  CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL) );
 
-  __syncthreads();
+  DRIVER_API_CALL(cuInit(0));
+  DRIVER_API_CALL(cuDeviceGetCount(&deviceCount));
+  if (deviceCount == 0) {
+    printf("There is no device supporting CUDA.\n");
+    return -2;
+  }
 
-  x = blockIdx.y * TILE_DIM + threadIdx.x;  // transpose block offset
-  y = blockIdx.x * TILE_DIM + threadIdx.y;
+  if (argc > 1)
+    deviceNum = atoi(argv[1]);
+  else
+    deviceNum = 0;
+  printf("CUDA Device Number: %d\n", deviceNum);
 
-  for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-     odata[(y+j)*width + x] = tile[threadIdx.x][threadIdx.y + j];
-}
+  DRIVER_API_CALL(cuDeviceGet(&device, deviceNum));
+  DRIVER_API_CALL(cuDeviceGetName(deviceName, 32, device));
+  printf("CUDA Device Name: %s\n", deviceName);
 
-int main(int argc, char **argv)
-{
-    const int N = 1024*10;
-    const int mem_size = N*N*sizeof(float);
+  DRIVER_API_CALL(cuDeviceComputeCapability(&computeCapabilityMajor,
+                                            &computeCapabilityMinor,
+                                            device));
+  DRIVER_API_CALL(cuCtxCreate(&context, 0, device));
 
-    int deviceCount;
-    float* h_idata = NULL;
-    float* h_tdata = NULL;
-    float* d_idata = NULL;
-    float* d_tdata = NULL;
 
-    dim3 dimGrid(N/TILE_DIM, N/TILE_DIM, 1);
-    dim3 dimBlock(TILE_DIM, BLOCK_ROWS, 1);
-
-    DRIVER_API_CALL( cuInit(0) );
-
-    DRIVER_API_CALL( cuDeviceGetCount(&deviceCount) );
-
-    if (deviceCount == 0) {
-        printf("|    there is no device supporting CUDA.\n");
-        exit(-1);
+  // Get the name of the metric to collect
+  if (argc > 2)
+    metricName = argv[2];
+  else {
+    if (computeCapabilityMajor > 1) {
+      metricName = METRIC_NAME_FERMI;
     }
+    else {
+      metricName = METRIC_NAME_TESLA;
+    }
+  }
 
-    // register cupti activity buffer callbacks
-    CUPTI_CALL( cuptiActivityRegisterCallbacks(bufferRequested, bufferCompleted) );
+  // need to collect duration of kernel execution without any event
+  // collection enabled (some metrics need kernel duration as part of
+  // calculation). The only accurate way to do this is by using the
+  // activity API.
 
-    CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMCPY) );
-    CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_MEMSET) );
-    CUPTI_CALL( cuptiActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL) );
+  // events for timing
+  cudaEvent_t startEvent, stopEvent;
+  RUNTIME_API_CALL( cudaEventCreate(&startEvent) );
+  RUNTIME_API_CALL( cudaEventCreate(&stopEvent) );
+  float ms;
 
-    // allocate memory
-    printf("|    allocation size in %d bytes\n", 2*mem_size);
-    RUNTIME_API_CALL( cudaMallocHost((void**)&h_idata, mem_size) );
-    RUNTIME_API_CALL( cudaMallocHost((void**)&h_tdata, mem_size) );
+  CUPTI_CALL(cuptiActivityRegisterCallbacks(bufferRequested, bufferCompleted));
 
-    // initialize memory
-    RUNTIME_API_CALL( cudaMalloc((void**)&d_idata, mem_size) );
-    RUNTIME_API_CALL( cudaMalloc((void**)&d_tdata, mem_size) );
+  RUNTIME_API_CALL( cudaEventRecord(startEvent, 0) );
+  runPass();
 
-    // transfer memory
-    RUNTIME_API_CALL( cudaMemcpy(d_idata, h_idata, mem_size, cudaMemcpyHostToDevice) );
+  RUNTIME_API_CALL( cudaEventRecord(stopEvent, 0) );
+  RUNTIME_API_CALL( cudaEventSynchronize(stopEvent) );
+  RUNTIME_API_CALL( cudaEventElapsedTime(&ms, startEvent, stopEvent) );
 
-    // memory setting
-    RUNTIME_API_CALL( cudaMemset(d_idata, 100, mem_size) );
+  printf("|    time %f\n", ms);
 
-    // ------------------------
-    // transposeNoBankConflicts
-    // ------------------------
-    printf("|    conflict-free transpose\n");
-    RUNTIME_API_CALL( cudaMemset(d_tdata, 0, mem_size) );
+  cudaDeviceSynchronize();
+  CUPTI_CALL(cuptiActivityFlushAll(0));
 
-    // events for timing
-    cudaEvent_t startEvent, stopEvent;
-    RUNTIME_API_CALL( cudaEventCreate(&startEvent) );
-    RUNTIME_API_CALL( cudaEventCreate(&stopEvent) );
-    float ms;
+  // setup launch callback for event collection
+  CUPTI_CALL(cuptiSubscribe(&subscriber, (CUpti_CallbackFunc)getMetricValueCallback, &metricData));
 
-    // warmup
-    RUNTIME_API_CALL( cudaEventRecord(startEvent, 0) );
-    transposeNoBankConflicts<<<dimGrid, dimBlock>>>(d_tdata, d_idata);
-    // for (int i = 0; i < NUM_REPS; i++)
-    //     transposeNoBankConflicts<<<dimGrid, dimBlock>>>(d_tdata, d_idata);
-    RUNTIME_API_CALL( cudaEventRecord(stopEvent, 0) );
-    RUNTIME_API_CALL( cudaEventSynchronize(stopEvent) );
-    RUNTIME_API_CALL( cudaEventElapsedTime(&ms, startEvent, stopEvent) );
-    RUNTIME_API_CALL( cudaMemcpy(h_tdata, d_tdata, mem_size, cudaMemcpyDeviceToHost) );
-    // postprocess(gold, h_tdata, nx * ny, ms);
+  CUPTI_CALL(cuptiEnableCallback(1, subscriber, CUPTI_CB_DOMAIN_RUNTIME_API,
+                                 CUPTI_RUNTIME_TRACE_CBID_cudaLaunch_v3020));
 
-    RUNTIME_API_CALL( cudaDeviceSynchronize() );
+  // allocate space to hold all the events needed for the metric
+  CUPTI_CALL(cuptiMetricGetIdFromName(device, metricName, &metricId));
+  CUPTI_CALL(cuptiMetricGetNumEvents(metricId, &metricData.numEvents));
+  metricData.device = device;
+  metricData.eventIdArray = (CUpti_EventID *)malloc(metricData.numEvents * sizeof(CUpti_EventID));
+  metricData.eventValueArray = (uint64_t *)malloc(metricData.numEvents * sizeof(uint64_t));
+  metricData.eventIdx = 0;
 
-    // free host memory
-    RUNTIME_API_CALL(cudaFreeHost(h_idata));
-    RUNTIME_API_CALL(cudaFreeHost(h_tdata));
+  // get the number of passes required to collect all the events
+  // needed for the metric and the event groups for each pass
+  CUPTI_CALL(cuptiMetricCreateEventGroupSets(context, sizeof(metricId), &metricId, &passData));
+  for (pass = 0; pass < passData->numSets; pass++) {
+    printf("Pass %u\n", pass);
+    metricData.eventGroups = passData->sets + pass;
+    runPass();
+  }
 
-    // free device memory
-    RUNTIME_API_CALL(cudaFree(d_idata));
-    RUNTIME_API_CALL(cudaFree(d_tdata));
+  if (metricData.eventIdx != metricData.numEvents) {
+    fprintf(stderr, "error: expected %u metric events, got %u\n",
+            metricData.numEvents, metricData.eventIdx);
+    exit(-1);
+  }
 
-    CUPTI_CALL(cuptiActivityFlushAll(0));
+  // use all the collected events to calculate the metric value
+  CUPTI_CALL(cuptiMetricGetValue(device, metricId,
+                                 metricData.numEvents * sizeof(CUpti_EventID),
+                                 metricData.eventIdArray,
+                                 metricData.numEvents * sizeof(uint64_t),
+                                 metricData.eventValueArray,
+                                 kernelDuration, &metricValue));
 
-    // disable unified memory counter activity
-    CUPTI_CALL( cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMCPY) );
-    CUPTI_CALL( cuptiActivityDisable(CUPTI_ACTIVITY_KIND_MEMSET) );
-    CUPTI_CALL( cuptiActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL) );
+  // print metric value, we format based on the value kind
+  {
+    CUpti_MetricValueKind valueKind;
+    size_t valueKindSize = sizeof(valueKind);
+    CUPTI_CALL(cuptiMetricGetAttribute(metricId, CUPTI_METRIC_ATTR_VALUE_KIND,
+                                       &valueKindSize, &valueKind));
+    switch (valueKind) {
+    case CUPTI_METRIC_VALUE_KIND_DOUBLE:
+      printf("Metric %s = %f\n", metricName, metricValue.metricValueDouble);
+      break;
+    case CUPTI_METRIC_VALUE_KIND_UINT64:
+      printf("Metric %s = %llu\n", metricName,
+             (unsigned long long)metricValue.metricValueUint64);
+      break;
+    case CUPTI_METRIC_VALUE_KIND_INT64:
+      printf("Metric %s = %lld\n", metricName,
+             (long long)metricValue.metricValueInt64);
+      break;
+    case CUPTI_METRIC_VALUE_KIND_PERCENT:
+      printf("Metric %s = %f%%\n", metricName, metricValue.metricValuePercent);
+      break;
+    case CUPTI_METRIC_VALUE_KIND_THROUGHPUT:
+      printf("Metric %s = %llu bytes/sec\n", metricName,
+             (unsigned long long)metricValue.metricValueThroughput);
+      break;
+    case CUPTI_METRIC_VALUE_KIND_UTILIZATION_LEVEL:
+      printf("Metric %s = utilization level %u\n", metricName,
+             (unsigned int)metricValue.metricValueUtilizationLevel);
+      break;
+    default:
+      fprintf(stderr, "error: unknown value kind\n");
+      exit(-1);
+    }
+  }
 
-    printf("|    time %f\n", ms);
+  CUPTI_CALL(cuptiUnsubscribe(subscriber));
 
-    cudaDeviceReset();
-
-    return 0;
+  return 0;
 }

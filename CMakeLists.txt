@@ -35,5 +35,5 @@ include_directories(${MPI_INCLUDE_PATH} ${CUDA_INCLUDE_DIRS} ${CUDA_cupti_INCLUD
 link_directories(${MPI_LIBRARY} ${CUDA_LIBRARIES})
 
 set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS}; -O3 -arch=sm_52)
-cuda_add_executable(cuNCC cupti_transpose.cu)
-target_link_libraries(cuNCC ${MPI_LIBRARIES} ${CUDA_LIBRARIES} ${CUDA_cupti_LIBRARY} cuda)
+cuda_add_executable(cupti_transpose cupti_transpose.cu)
+target_link_libraries(cupti_transpose ${MPI_LIBRARIES} ${CUDA_LIBRARIES} ${CUDA_cupti_LIBRARY} cuda)
