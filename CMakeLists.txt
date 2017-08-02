@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.2)
-project(cuNCC)
+project(cupti_transpose)
 
 set(CMAKE_C_STANDARD 99)
 
@@ -31,9 +31,11 @@ if(CUDA_FOUND)
     message("|    " ${CUDA_cupti_LIBRARY})
 endif(CUDA_FOUND)
 
-include_directories(${MPI_INCLUDE_PATH} ${CUDA_INCLUDE_DIRS} ${CUDA_cupti_INCLUDE_DIRS})
-link_directories(${MPI_LIBRARY} ${CUDA_LIBRARIES})
+include_directories(${CUDA_INCLUDE_DIRS} ${CUDA_cupti_INCLUDE_DIRS})
+link_directories(${CUDA_LIBRARIES} ${CUDA_cupti_LIBRARY})
 
-set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS}; -O3 -arch=sm_52)
 cuda_add_executable(cupti_transpose cupti_transpose.cu)
-target_link_libraries(cupti_transpose ${MPI_LIBRARIES} ${CUDA_LIBRARIES} ${CUDA_cupti_LIBRARY} cuda)
+target_link_libraries(cupti_transpose ${CUDA_LIBRARIES} ${CUDA_cupti_LIBRARY} cuda)
+
+cuda_add_executable(transpose transpose.cu)
+target_link_libraries(transpose ${CUDA_LIBRARIES} cuda)
