@@ -34,8 +34,8 @@ endif(CUDA_FOUND)
 include_directories(${CUDA_INCLUDE_DIRS} ${CUDA_cupti_INCLUDE_DIRS})
 link_directories(${CUDA_LIBRARIES} ${CUDA_cupti_LIBRARY})
 
-cuda_add_executable(cupti_transpose cupti_transpose.cu)
-target_link_libraries(cupti_transpose ${CUDA_LIBRARIES} ${CUDA_cupti_LIBRARY} cuda)
+cuda_add_executable(cupti_vecadd cupti_vecadd.cu)
+target_link_libraries(cupti_vecadd ${CUDA_LIBRARIES} ${CUDA_cupti_LIBRARY} cuda)
 
-cuda_add_executable(transpose transpose.cu)
-target_link_libraries(transpose ${CUDA_LIBRARIES} cuda)
+cuda_add_executable(vecadd vecadd.cu)
+target_link_libraries(vecadd ${CUDA_LIBRARIES} cuda)
